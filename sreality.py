@@ -8,7 +8,6 @@ import sys
 
 # Discord webhook URLs
 NEW_LISTINGS_WEBHOOK_URL = "https://discord.com/api/webhooks/1347919755402805334/U3rNngNL6xVRhmBUDPQfOed6HroFTgDGEzHXFlnhNP-s4t7n2qtjvj_HQBIdamhjlCHW"
-REMOVED_LISTINGS_WEBHOOK_URL = "https://discord.com/api/webhooks/1347921188562931763/2_G_tATk3-wSCrSxZIW_qTN8mCgk5zl8-PBxtyYnteHmU7Rb8ZJ4Lit6gc73fCRx-tp8"
 STATUS_WEBHOOK_URL = "https://discord.com/api/webhooks/1347921782296023041/TV8VRdw77kWzf1W5ygqYewpIJH8YnVyIyJNghKmnaxLGu4uWvc9h_-g50XS7IaHqh70U"
 
 # File to store listings
@@ -27,10 +26,9 @@ def get_listing_links(page_url):
     soup = BeautifulSoup(response.text, 'html.parser')
     links = []
 
-    # Find all apartment listing links on the page
     for link in soup.find_all('a', href=True):
         href = link['href']
-        if '/detail/prodej/byt' in href:  # Only apartment links
+        if '/detail/prodej/byt' in href:
             full_url = 'https://www.sreality.cz' + href
             links.append(full_url)
 
@@ -38,34 +36,30 @@ def get_listing_links(page_url):
 
 def load_saved_listings():
     """Load previously saved listings from the JSON file"""
-    file_path = os.path.abspath(DATA_FILE)  # Získá absolutní cestu k souboru
-    print(f"Looking for the file at: {file_path}")  # Vypíše absolutní cestu k souboru
+    file_path = os.path.abspath(DATA_FILE)
+    print(f"Looking for the file at: {file_path}")
+    
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             try:
                 saved_data = json.load(f)
-                if isinstance(saved_data, dict) and "listings" in saved_data and "total_count" in saved_data:
-                    print(f"Total count loaded: {saved_data['total_count']}")  # Vypíše hodnotu total_count
-                    return saved_data
+                if isinstance(saved_data, dict) and "listings" in saved_data:
+                    return set(saved_data["listings"])  # Vrátíme set, abychom usnadnili porovnávání
                 else:
-                    print("Structure is incorrect, returning default values.")
-                    return {"listings": [], "total_count": 0}  # Default if structure is incorrect
+                    return set()
             except json.JSONDecodeError:
-                print("Error decoding JSON, returning default values.")
-                return {"listings": [], "total_count": 0}  # Handle invalid JSON format
+                return set()
     else:
-        print("File does not exist, returning default values.")
-        return {"listings": [], "total_count": 0}  # Default if file doesn't exist
+        return set()
 
-
-def save_listings(listings, total_count):
-    """Save current listings and total count to a JSON file"""
-    file_path = os.path.abspath(DATA_FILE)  # Získá absolutní cestu k souboru
-    print(f"Saving to the file at: {file_path}")  # Vypíše absolutní cestu k souboru
-    data = {"listings": listings, "total_count": total_count}
+def save_listings(listings):
+    """Save current listings to a JSON file"""
+    file_path = os.path.abspath(DATA_FILE)
+    print(f"Saving to the file at: {file_path}")
+    
     try:
         with open(file_path, "w") as f:
-            json.dump(data, f, indent=4)
+            json.dump({"listings": list(listings)}, f, indent=4)
             print("Listings successfully saved.")
     except Exception as e:
         print(f"Error saving listings: {e}")
@@ -83,15 +77,14 @@ def send_discord_notification(webhook_url, message):
 def send_status_message(total_count):
     """Send status message to Discord every hour"""
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    message = f"Počet bytů: {total_count}\nKontrola byla spuštěna v {current_time}"
+    message = f"Počet bytů v databázi: {total_count}\nKontrola byla spuštěna v {current_time}"
     send_discord_notification(STATUS_WEBHOOK_URL, message)
 
 def main():
     """Main function - checks and saves the apartment listings"""
-    all_links = []
+    all_links = set()
     page = 1
 
-    # Load current apartment listings
     while True:
         page_url = BASE_URL + f'&strana={page}'
         print(f'Processing page {page}...')
@@ -101,44 +94,32 @@ def main():
             print(f'End! Page {page} does not contain any apartments.')
             break
         
-        all_links.extend(links)
+        all_links.update(links)
         page += 1
 
-    all_links = list(set(all_links))  # Remove duplicates
-    total_count = len(all_links)
-
     # Load previously saved listings
-    saved_data = load_saved_listings()
-    saved_listings = saved_data["listings"]
-    saved_total_count = saved_data["total_count"]
+    saved_listings = load_saved_listings()
 
-    # Compare changes
-    new_listings = list(set(all_links) - set(saved_listings))
-    removed_listings = list(set(saved_listings) - set(all_links))
+    # Determine new listings
+    new_listings = all_links - saved_listings
 
-    # If there are new listings, send a notification to the "new listings" webhook
+    # If there are new listings, send a notification and add them to the list
     if new_listings:
         new_message = f"Nové nabídky:\n" + "\n".join(new_listings)
         send_discord_notification(NEW_LISTINGS_WEBHOOK_URL, new_message)
-
-    # If some listings were removed, send a notification to the "removed listings" webhook
-    if removed_listings:
-        removed_message = f"Smazané nabídky:\n" + "\n".join(removed_listings)
-        send_discord_notification(REMOVED_LISTINGS_WEBHOOK_URL, removed_message)
-
-    # Save the new listings and total count
-    save_listings(all_links, total_count)
+    
+    # Merge old and new listings and save
+    all_listings = saved_listings | all_links
+    save_listings(all_listings)
 
     # Send hourly status message
-    send_status_message(total_count)
+    send_status_message(len(all_listings))
 
-    print(f"Total apartments found: {total_count}.")
+    print(f"Total apartments found and stored: {len(all_listings)}.")
 
 if __name__ == "__main__":
     message = "Bot byl spuštěn."
     send_discord_notification(STATUS_WEBHOOK_URL, message)
     while True:
         main()
-        time.sleep(1800)
-
-
+        time.sleep(1800)  # 30 minutes
